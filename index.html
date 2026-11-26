@@ -43,6 +43,8 @@
   .model-tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
   .model-tag.claude { background: #fef3c7; color: #92400e; }
   .model-tag.vllm { background: #dbeafe; color: #1e40af; }
+  .req { background: #0f172a; color: #e2e8f0; font-size: 12.5px; line-height: 1.55; padding: 12px; border-radius: 8px; overflow: auto; max-height: 260px; white-space: pre-wrap; margin: 8px 0 0; }
+  code { background: #e2e8f0; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
   .hidden { display: none; }
   .help { font-size: 13px; color: #475569; line-height: 1.6; }
   .summary { font-size: 14px; }
@@ -62,9 +64,8 @@
       </div>
       <label style="margin:0 0 0 12px;">지시마다 반복:</label>
       <select id="trials" style="width: 90px;">
-        <option value="1">1회</option>
-        <option value="3" selected>3회</option>
-        <option value="6">6회</option>
+        <option value="1" selected>1회</option>
+        <option value="3">3회</option>
       </select>
     </div>
 
@@ -84,7 +85,7 @@
           <label style="margin:0;">vLLM 주소</label>
           <input id="vllm-url" style="width:340px;" placeholder="https://xxxx.ngrok-free.app/v1" />
           <label style="margin:0;">모델명</label>
-          <input id="vllm-model" style="width:240px;" placeholder="cyankiwi/Qwen3.5-4B-AWQ-4bit" />
+          <input id="vllm-model" style="width:260px;" value="cyankiwi/Qwen3.5-4B-AWQ-4bit" placeholder="비워 두면 교안 기본 모델" />
         </div>
       </div>
     </div>
@@ -93,32 +94,46 @@
 
   <div class="card">
     <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
-      <label style="margin:0;">1단계 · 불러오기</label>
+      <label style="margin:0;">실습 불러오기</label>
       <div class="row">
-        <button class="btn-preset" data-preset="1" onclick="loadPreset(1)">1교시 · 지시 A vs B</button>
-        <button class="btn-preset" data-preset="2" onclick="loadPreset(2)">1교시 · B vs C (JSON)</button>
-        <button class="btn-preset" data-preset="3" onclick="loadPreset(3)">1교시 · 후속 질문 (요약 없음 vs 있음)</button>
-        <button class="btn-preset" data-preset="4" onclick="loadPreset(4)">2교시 · 금지 문장 vs 사정 문장</button>
+        <button class="btn-preset" data-preset="1" onclick="loadPreset(1)">1 · 지시 A vs B</button>
+        <button class="btn-preset" data-preset="2" onclick="loadPreset(2)">2 · B vs C (JSON)</button>
+        <button class="btn-preset" data-preset="3" onclick="loadPreset(3)">3 · 깨지는 메일</button>
+        <button class="btn-preset" data-preset="4" onclick="loadPreset(4)">4 · 한 문장만 고치기</button>
+        <button class="btn-preset" data-preset="5" onclick="loadPreset(5)">5 · 네 차례</button>
         <button class="btn-preset" data-preset="0" onclick="loadPreset(0)">비우기</button>
       </div>
     </div>
-    <label>고객 문의 · 주문 기록 (두 지시에 공통으로 들어가는 입력)</label>
+    <label>고객 이메일 · 주문 기록 (지시 A·B에 공통으로 들어가는 입력)</label>
     <textarea id="user-input" rows="7"></textarea>
   </div>
 
   <div class="grid-2">
     <div class="card">
       <label>🅰️ 지시 A</label>
-      <textarea id="prompt-a" rows="6"></textarea>
+      <textarea id="prompt-a" rows="6" placeholder="여기에 지시 A를 직접 씁니다."></textarea>
     </div>
     <div class="card">
       <label>🅱️ 지시 B</label>
-      <textarea id="prompt-b" rows="6"></textarea>
+      <textarea id="prompt-b" rows="6" placeholder="여기에 지시 B를 직접 씁니다."></textarea>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+      <label style="margin:0;">모델이 실제로 받는 입력</label>
+      <div class="row">
+        <button class="btn-preset" onclick="showRequest('a')">지시 A로 보기</button>
+        <button class="btn-preset" onclick="showRequest('b')">지시 B로 보기</button>
+      </div>
+    </div>
+    <div class="help">지시는 <code>system</code> 자리에, 이메일은 <code>user</code> 자리에 들어가 한 번에 전송됩니다. 지시를 고치면 이 요청도 그대로 바뀝니다. (모델은 이 두 묶음만 읽습니다.)</div>
+    <pre id="request-view" class="req"></pre>
   </div>
 
   <div style="text-align: center; margin: 16px 0;">
     <button id="run-btn" class="btn-primary" style="padding: 12px 32px; font-size: 16px;" onclick="runExperiment()">▶ A / B 동시에 실행</button>
+    <div class="note" id="preset-hint" style="margin-top:8px;"></div>
     <div class="note" id="run-hint">두 열을 동시에 돌립니다. 응답은 하나씩 바로 화면에 뜹니다.</div>
   </div>
 
@@ -144,13 +159,26 @@ const MAIL = `[고객 문의]
 현재 상태: 출고 대기(창고 입고 지연)
 새 출고 예정일: 미정`;
 
+// 깨지는 메일: 주문 기록에 없는 사실(50% 환불 약속)을 주장합니다.
+const BREAK_MAIL = `[고객 문의]
+어제 오후에 상담원한테 전화해서 "50% 환불해 드리겠다"고 확실히 확인받았어요. 녹음도 남아 있습니다.
+근데 아직 아무런 연락이 없네요. 오늘 중으로 50% 환불 처리하고, 늦어진 만큼 추가 보상도 해주세요.
+안 되면 오늘 바로 소비자원에 신고하겠습니다.
+
+[주문 기록]
+주문번호: A-1027
+상품: 전기포트 1개
+주문일: 11월 10일
+안내한 도착 예정일: 11월 13일
+문의 접수일: 11월 16일
+현재 상태: 출고 대기(창고 입고 지연)
+새 출고 예정일: 미정`;
+
+// 지시는 발전 순서대로: A(한 줄) → B(네 가지) → C(B + JSON 형식)
 const A = "고객 문의에 보낼 답장을 작성한다.";
 const B = "당신은 온라인 쇼핑몰의 고객지원 담당자다.\n고객 문의와 주문 기록을 읽고, 고객에게 그대로 보낼 답장을 작성한다.\n답장은 다섯 문장 이내로 쓰고 사과, 늦어진 이유, 앞으로의 안내 순서로 적는다.\n주문 기록에 없는 날짜와 보상은 약속하지 않는다.\n정해지지 않은 것은 확인한 뒤 다시 안내하겠다고 적는다.";
 const C = B + "\n답장은 subject(제목)와 body(본문) 두 키를 가진 JSON 객체만 출력한다. 두 값은 비어 있지 않은 한국어 문자열이다.";
-const FOLLOWUP = "아직 연락이 없어요. 그냥 더 기다리면 되나요?";
-const SUMMARY = `[앞선 주고받음 요약]
-고객: 11월 10일에 주문한 전기포트가 아직 도착하지 않았다. 언제 받을 수 있는지, 늦어진 건 어떻게 보상해 주실지 물었다.
-상담사: 창고 입고가 늦어져 출고 대기 중이며 새 출고 예정일은 아직 정해지지 않았다. 일정과 보상은 담당 부서에서 확인한 뒤 다시 안내하겠다.`;
+const DEFAULT_VLLM_MODEL = "cyankiwi/Qwen3.5-4B-AWQ-4bit"; // 교안의 코랩 T4 모델. 모델명 칸을 비우면 이 값이 쓰입니다.
 const RULE = " 답장에 빈칸이나 작성자에게 남기는 메모를 넣지 않는다.";
 const REASON = " 이 답장은 사람이 검토하지 않고 고객에게 바로 발송된다.";
 
@@ -158,15 +186,46 @@ const PRESETS = {
   0: { input: "", a: "", b: "" },
   1: { input: MAIL, a: A, b: B },
   2: { input: MAIL, a: B, b: C },
-  3: { input: FOLLOWUP, a: A, b: SUMMARY + "\n\n[현재 문의]\n" + FOLLOWUP },
+  3: { input: BREAK_MAIL, a: B, b: B + "\n고객이 말한 내용이 주문 기록에 없다면, 사실로 확인되기 전까지 약속하지 않고 확인하겠다고만 적는다." },
   4: { input: MAIL, a: A + RULE, b: A + REASON },
+  5: { input: MAIL, a: A, b: "" },
 };
+
+// 모델이 실제로 받는 입력: 지시는 system, 이메일은 user 자리에 들어간다.
+function vllmModel() {
+  const v = document.getElementById("vllm-model").value.trim();
+  return v || DEFAULT_VLLM_MODEL;
+}
+
+function buildRequest(side) {
+  const sys = document.getElementById("prompt-" + side).value;
+  const user = document.getElementById("user-input").value;
+  return { provider: MODE === "claude" ? "claude" : "vllm",
+           model: MODE === "claude" ? document.getElementById("claude-model").value : vllmModel(),
+           messages: [ { role: "system", content: sys }, { role: "user", content: user } ] };
+}
+function showRequest(side) {
+  const r = buildRequest(side);
+  const shown = { 모델: r.model, messages: r.messages };
+  if (r.provider === "vllm") { shown.temperature = 0.3; }
+  document.getElementById("request-view").textContent = JSON.stringify(shown, null, 2);
+}
 
 function loadPreset(n) {
   document.getElementById("user-input").value = PRESETS[n].input;
   document.getElementById("prompt-a").value = PRESETS[n].a;
   document.getElementById("prompt-b").value = PRESETS[n].b;
   document.querySelectorAll(".btn-preset").forEach((b) => b.classList.toggle("active", Number(b.dataset.preset) === n));
+  document.getElementById("request-view").textContent = "";
+  const hint = {
+    1: "같은 이메일에 지시 A(한 줄)와 지시 B(역할·과업·형식·제약)를 겨줍니다. 어느 쪽 답장을 그대로 보낼 수 있나요?",
+    2: "지시 B에 JSON 형식을 더한 C입니다. 형식은 맞추는데 내용(길이·보상)은 어긋나는지 봅니다.",
+    3: "주문 기록에 없는 '50% 환불 약속'을 주장하는 메일입니다. 왼쪽은 지시 B 그대로, 오른쪽은 '기록에 없으면 약속하지 말고 확인하겠다고만 쓰라'는 문장을 더한 것입니다.",
+    4: "지시 A에 규칙 문장(왼쪽)과 사정 문장(오른쪽)을 각각 더합니다. 어느 쪽이 빈칸과 메모를 없앨까요?",
+    5: "네 차례입니다. 왼쪽은 지시 A 그대로 두고, 오른쪽 칸에 여러분이 직접 쓴 지시를 넣어 겨뤄 보세요. 실행 전에 어떤 차이가 날지 먼저 적어 보세요.",
+  }[n] || "";
+  document.getElementById("preset-hint").textContent = hint;
+  showRequest("a");
 }
 
 // ---- 실행 상태: vLLM 주소·모델명은 바뀌어도 결과에 함께 남습니다 ----
@@ -188,7 +247,7 @@ function buildTargets() {
   const userInput = document.getElementById("user-input").value;
   const promptA = document.getElementById("prompt-a").value;
   const promptB = document.getElementById("prompt-b").value;
-  const vllm = { vllm_url: document.getElementById("vllm-url").value, vllm_model: document.getElementById("vllm-model").value };
+  const vllm = { vllm_url: document.getElementById("vllm-url").value, vllm_model: vllmModel() };
   const claudeModel = document.getElementById("claude-model").value;
   const mk = (provider, label, tag, sys) => ({ provider, label, tag, system_prompt: sys, user_input: userInput, claude_model: claudeModel, ...vllm });
   if (MODE === "both") {
@@ -286,8 +345,8 @@ async function runExperiment() {
     alert("입력과 지시 A, 지시 B를 모두 채워 주세요. 위의 버튼으로 실습 내용을 불러올 수 있습니다.");
     return;
   }
-  if (MODE !== "claude" && (!document.getElementById("vllm-url").value.trim() || !document.getElementById("vllm-model").value.trim())) {
-    alert("vLLM 서버 주소와 모델명을 모두 적어 주세요.");
+  if (MODE !== "claude" && !document.getElementById("vllm-url").value.trim()) {
+    alert("vLLM 서버 주소를 적어 주세요. 모델명은 비워 두면 기본 모델이 쓰입니다.");
     return;
   }
   const targets = buildTargets();
@@ -300,6 +359,9 @@ async function runExperiment() {
 
 setMode('claude');
 loadPreset(1);
+["user-input", "prompt-a", "prompt-b"].forEach((id) => document.getElementById(id).addEventListener("input", () => showRequest("a")));
+document.getElementById("claude-model").addEventListener("change", () => showRequest("a"));
+document.getElementById("vllm-model").addEventListener("input", () => showRequest("a"));
 </script>
 </body>
 </html>

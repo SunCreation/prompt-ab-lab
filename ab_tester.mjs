@@ -12,8 +12,9 @@ const DEFAULT_PORT = 8000;
 
 async function callVllm({ vllm_url, vllm_model, system_prompt, user_input }) {
   const base = String(vllm_url || "").trim().replace(/\/+$/, "");
-  const model = String(vllm_model || "").trim();
-  if (!base || !model) throw new Error("vLLM 주소와 모델명을 모두 적어 주세요.");
+  const DEFAULT_VLLM_MODEL = "cyankiwi/Qwen3.5-4B-AWQ-4bit"; // 교안의 코랩 T4 모델. 모델명이 비면 이 값이 쓰입니다.
+  const model = String(vllm_model || "").trim() || DEFAULT_VLLM_MODEL;
+  if (!base) throw new Error("vLLM 서버 주소를 적어 주세요.");
   const response = await fetch(base.replace(/\/chat\/completions$/, "") + "/chat/completions", {
     method: "POST",
     headers: {
