@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>프롬프트 A/B 테스트 랩</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fb; color: #1e293b; margin: 0; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { margin: 0 0 16px; font-size: 24px; }
+  h3 { margin: 0 0 8px; font-size: 16px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-4 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid-2, .grid-4 { grid-template-columns: 1fr; } }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #475569; }
+  input, textarea, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; font-family: inherit; }
+  textarea { resize: vertical; line-height: 1.5; }
+  button { padding: 10px 16px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: 0.15s; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-primary:disabled { background: #94a3b8; cursor: not-allowed; }
+  .btn-preset { background: #e2e8f0; color: #334155; font-size: 13px; padding: 6px 12px; }
+  .btn-preset:hover { background: #cbd5e1; }
+  .btn-preset.active { background: #2563eb; color: #fff; }
+  .result-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; margin-top: 12px; }
+  .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; font-weight: 700; color: #64748b; }
+  .result-body { white-space: pre-wrap; font-size: 14px; line-height: 1.6; color: #0f172a; background: #fff; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+  .badge { font-size: 12px; padding: 3px 8px; border-radius: 999px; font-weight: 600; background: #e2e8f0; color: #334155; }
+  .badge.ok { background: #dcfce7; color: #166534; }
+  .badge.fail { background: #fee2e2; color: #991b1b; }
+  .note { font-size: 12px; color: #64748b; margin-top: 6px; }
+
+  .seg { display: inline-flex; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; }
+  .seg-btn { background: #fff; color: #334155; border-radius: 0; padding: 8px 14px; font-size: 13px; border-right: 1px solid #cbd5e1; }
+  .seg-btn:last-child { border-right: none; }
+  .seg-btn:hover { background: #f1f5f9; }
+  .seg-btn.active { background: #2563eb; color: #fff; }
+  .mode-config.off { opacity: 0.45; }
+  .model-tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
+  .model-tag.claude { background: #fef3c7; color: #92400e; }
+  .model-tag.vllm { background: #dbeafe; color: #1e40af; }
+  .hidden { display: none; }
+  .help { font-size: 13px; color: #475569; line-height: 1.6; }
+  .summary { font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>프롬프트 A/B 테스트 랩</h1>
+
+  <div class="card">
+    <div class="row" style="margin-bottom: 12px;">
+      <label style="margin:0;">실행할 모델:</label>
+      <div class="seg" role="group" aria-label="실행할 모델">
+        <button type="button" class="seg-btn" data-mode="claude" onclick="setMode('claude')">Claude만</button>
+        <button type="button" class="seg-btn" data-mode="vllm" onclick="setMode('vllm')">vLLM만</button>
+        <button type="button" class="seg-btn" data-mode="both" onclick="setMode('both')">둘 다 한 번에</button>
+      </div>
+      <label style="margin:0 0 0 12px;">지시마다 반복:</label>
+      <select id="trials" style="width: 90px;">
+        <option value="1">1회</option>
+        <option value="3" selected>3회</option>
+        <option value="6">6회</option>
+      </select>
+    </div>
+
+    <div class="row" style="gap:24px;">
+      <div id="claude-config" class="mode-config">
+        <div class="row" style="gap:8px;">
+          <label style="margin:0;">Claude 모델</label>
+          <select id="claude-model" style="width:130px;">
+            <option value="haiku" selected>haiku</option>
+            <option value="sonnet">sonnet</option>
+          </select>
+          <span class="help">Claude Code 로그인 계정으로 호출됩니다.</span>
+        </div>
+      </div>
+      <div id="vllm-config" class="mode-config hidden">
+        <div class="row" style="gap:8px;">
+          <label style="margin:0;">vLLM 주소</label>
+          <input id="vllm-url" style="width:340px;" placeholder="https://xxxx.ngrok-free.app/v1" />
+          <label style="margin:0;">모델명</label>
+          <input id="vllm-model" style="width:240px;" placeholder="cyankiwi/Qwen3.5-4B-AWQ-4bit" />
+        </div>
+      </div>
+    </div>
+    <div id="vllm-note" class="note hidden">코랩에서 직접 띄운 서버든 강사가 띄워 둔 서버든 주소만 바꾸면 됩니다. 코랩 T4는 처음 뜨는 데 10분 넘게 걸릴 수 있습니다.</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+      <label style="margin:0;">1단계 · 불러오기</label>
+      <div class="row">
+        <button class="btn-preset" data-preset="1" onclick="loadPreset(1)">1교시 · 지시 A vs B</button>
+        <button class="btn-preset" data-preset="2" onclick="loadPreset(2)">1교시 · B vs C (JSON)</button>
+        <button class="btn-preset" data-preset="3" onclick="loadPreset(3)">1교시 · 후속 질문 (요약 없음 vs 있음)</button>
+        <button class="btn-preset" data-preset="4" onclick="loadPreset(4)">2교시 · 금지 문장 vs 사정 문장</button>
+        <button class="btn-preset" data-preset="0" onclick="loadPreset(0)">비우기</button>
+      </div>
+    </div>
+    <label>고객 문의 · 주문 기록 (두 지시에 공통으로 들어가는 입력)</label>
+    <textarea id="user-input" rows="7"></textarea>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <label>🅰️ 지시 A</label>
+      <textarea id="prompt-a" rows="6"></textarea>
+    </div>
+    <div class="card">
+      <label>🅱️ 지시 B</label>
+      <textarea id="prompt-b" rows="6"></textarea>
+    </div>
+  </div>
+
+  <div style="text-align: center; margin: 16px 0;">
+    <button id="run-btn" class="btn-primary" style="padding: 12px 32px; font-size: 16px;" onclick="runExperiment()">▶ A / B 동시에 실행</button>
+    <div class="note" id="run-hint">두 열을 동시에 돌립니다. 응답은 하나씩 바로 화면에 뜹니다.</div>
+  </div>
+
+  <div id="results-wrap"></div>
+
+  <div class="card help">
+    <b>통과 기준은 사람이 판단합니다.</b> 아래 표시는 자동으로 셀 수 있는 것만 보여 주며(글자 수·문장 수·JSON 모양·빈칸 표시), 날짜를 지어냈는지, 보상을 약속했는지, 그대로 보낼 수 있는지는 직접 읽고 판정합니다.<br />
+    실행할수록 같은 지시라도 답이 조금씩 다릅니다. 한 번의 결과로 결론 내리지 말고 같은 조건을 여러 번 돌려 보세요.
+  </div>
+</div>
+
+<script>
+
+const MAIL = `[고객 문의]
+11월 10일에 주문한 전기포트가 아직도 안 왔습니다. 13일까지 온다고 해서 주말 집들이에 쓰려고 산 건데 결국 못 썼어요. 언제 받을 수 있나요? 늦어진 건 어떻게 보상해 주실 건가요?
+
+[주문 기록]
+주문번호: A-1027
+상품: 전기포트 1개
+주문일: 11월 10일
+안내한 도착 예정일: 11월 13일
+문의 접수일: 11월 16일
+현재 상태: 출고 대기(창고 입고 지연)
+새 출고 예정일: 미정`;
+
+const A = "고객 문의에 보낼 답장을 작성한다.";
+const B = "당신은 온라인 쇼핑몰의 고객지원 담당자다.\n고객 문의와 주문 기록을 읽고, 고객에게 그대로 보낼 답장을 작성한다.\n답장은 다섯 문장 이내로 쓰고 사과, 늦어진 이유, 앞으로의 안내 순서로 적는다.\n주문 기록에 없는 날짜와 보상은 약속하지 않는다.\n정해지지 않은 것은 확인한 뒤 다시 안내하겠다고 적는다.";
+const C = B + "\n답장은 subject(제목)와 body(본문) 두 키를 가진 JSON 객체만 출력한다. 두 값은 비어 있지 않은 한국어 문자열이다.";
+const FOLLOWUP = "아직 연락이 없어요. 그냥 더 기다리면 되나요?";
+const SUMMARY = `[앞선 주고받음 요약]
+고객: 11월 10일에 주문한 전기포트가 아직 도착하지 않았다. 언제 받을 수 있는지, 늦어진 건 어떻게 보상해 주실지 물었다.
+상담사: 창고 입고가 늦어져 출고 대기 중이며 새 출고 예정일은 아직 정해지지 않았다. 일정과 보상은 담당 부서에서 확인한 뒤 다시 안내하겠다.`;
+const RULE = " 답장에 빈칸이나 작성자에게 남기는 메모를 넣지 않는다.";
+const REASON = " 이 답장은 사람이 검토하지 않고 고객에게 바로 발송된다.";
+
+const PRESETS = {
+  0: { input: "", a: "", b: "" },
+  1: { input: MAIL, a: A, b: B },
+  2: { input: MAIL, a: B, b: C },
+  3: { input: FOLLOWUP, a: A, b: SUMMARY + "\n\n[현재 문의]\n" + FOLLOWUP },
+  4: { input: MAIL, a: A + RULE, b: A + REASON },
+};
+
+function loadPreset(n) {
+  document.getElementById("user-input").value = PRESETS[n].input;
+  document.getElementById("prompt-a").value = PRESETS[n].a;
+  document.getElementById("prompt-b").value = PRESETS[n].b;
+  document.querySelectorAll(".btn-preset").forEach((b) => b.classList.toggle("active", Number(b.dataset.preset) === n));
+}
+
+// ---- 실행 상태: vLLM 주소·모델명은 바뀌어도 결과에 함께 남습니다 ----
+let MODE = "claude";
+function setMode(m) {
+  MODE = m;
+  document.querySelectorAll(".seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === m));
+  const needClaude = m !== "vllm", needVllm = m !== "claude";
+  document.getElementById("claude-config").classList.toggle("hidden", !needClaude);
+  document.getElementById("vllm-config").classList.toggle("hidden", !needVllm);
+  document.getElementById("vllm-note").classList.toggle("hidden", !needVllm);
+  document.getElementById("run-hint").textContent =
+    m === "both" ? "지시 A·B를 Claude와 vLLM 양쪽에서 동시에 돌립니다(네 열). 윗줄끼리, 아랫줄끼리 세로로 견주면 같은 지시가 모델마다 어떻게 다른지 보입니다."
+                : "두 열을 동시에 돌립니다. 응답은 하나씩 바로 화면에 뜹니다.";
+}
+
+// '둘 다' 모드: 지시(A/B) × 모델(claude/vllm) 4열. 한 모델: 지시 2열.
+function buildTargets() {
+  const userInput = document.getElementById("user-input").value;
+  const promptA = document.getElementById("prompt-a").value;
+  const promptB = document.getElementById("prompt-b").value;
+  const vllm = { vllm_url: document.getElementById("vllm-url").value, vllm_model: document.getElementById("vllm-model").value };
+  const claudeModel = document.getElementById("claude-model").value;
+  const mk = (provider, label, tag, sys) => ({ provider, label, tag, system_prompt: sys, user_input: userInput, claude_model: claudeModel, ...vllm });
+  if (MODE === "both") {
+    return [
+      mk("claude", "🅰️ 지시 A", "Claude", promptA), mk("vllm", "🅰️ 지시 A", "vLLM", promptA),
+      mk("claude", "🅱️ 지시 B", "Claude", promptB), mk("vllm", "🅱️ 지시 B", "vLLM", promptB),
+    ];
+  }
+  const provider = MODE === "vllm" ? "vllm" : "claude";
+  const tag = provider === "vllm" ? "vLLM" : "Claude";
+  return [mk(provider, "🅰️ 지시 A", tag, promptA), mk(provider, "🅱️ 지시 B", tag, promptB)];
+}
+
+function renderResultAreas(targets) {
+  const wrap = document.getElementById("results-wrap");
+  wrap.innerHTML = "";
+  wrap.className = targets.length === 4 ? "grid-4" : "grid-2";
+  targets.forEach((t, i) => {
+    const col = document.createElement("div");
+    col.className = "card";
+    col.innerHTML = `<h3>${t.label}<span class="model-tag ${t.provider}">${t.tag}</span> <span id="sum-${i}" class="summary"></span></h3><div id="results-${i}"></div>`;
+    wrap.appendChild(col);
+  });
+}
+
+async function callModel(t) {
+  const res = await fetch("/api/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: t.provider, system_prompt: t.system_prompt, user_input: t.user_input,
+      vllm_url: t.vllm_url, vllm_model: t.vllm_model, claude_model: t.claude_model,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "요청에 실패했습니다");
+  return data;
+}
+
+function escapeHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+// 자동으로 셀 수 있는 것만 표시합니다. 내용 판정은 사람이 합니다.
+function autoBadges(text, wantJson) {
+  const trimmed = text.trim();
+  const sentences = trimmed.split(/(?<=[.!?])\s+|\n+/).filter((s) => s.trim()).length;
+  const blank = /(\[[^\]\n]{1,40}\]|_{2,})/.test(trimmed);
+  let html = `<span class="badge">${trimmed.length}자 · 약 ${sentences}문장</span>`;
+  html += `<span class="badge ${sentences <= 5 ? "ok" : "fail"}">${sentences <= 5 ? "5문장 이내" : "5문장 초과"}</span>`;
+  if (blank) html += `<span class="badge fail">빈칸으로 보이는 표시 있음</span>`;
+  if (wantJson) {
+    try {
+      const obj = JSON.parse(trimmed.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+      const ok = obj && typeof obj === "object" && "subject" in obj && "body" in obj;
+      html += `<span class="badge ${ok ? "ok" : "fail"}">${ok ? "JSON 통과" : "JSON 키 불일치"}</span>`;
+    } catch {
+      html += `<span class="badge fail">JSON으로 읽을 수 없음</span>`;
+    }
+  }
+  return { html, sentences, ok5: sentences <= 5 };
+}
+
+async function runColumn(i, t, trials) {
+  const box = document.getElementById("results-" + i);
+  const sum = document.getElementById("sum-" + i);
+  const wantJson = /JSON/.test(t.system_prompt);
+  let ok5 = 0, done = 0;
+  for (let n = 1; n <= trials; n++) {
+    const card = document.createElement("div");
+    card.className = "result-card";
+    card.innerHTML = `<div class="result-header"><span>${n}번째 실행</span><span>생성 중...</span></div><div class="result-body">응답을 기다리는 중입니다...</div>`;
+    box.appendChild(card);
+    try {
+      const t0 = performance.now();
+      const { text, note } = await callModel(t);
+      const sec = ((performance.now() - t0) / 1000).toFixed(1);
+      const badges = autoBadges(text, wantJson);
+      if (badges.ok5) ok5 += 1;
+      done += 1;
+      card.innerHTML = `
+        <div class="result-header"><span>${n}번째 실행</span><span>${sec}초${note ? " · " + escapeHtml(note) : ""}</span></div>
+        <div class="result-body">${escapeHtml(text)}</div>
+        <div class="badges">${badges.html}</div>`;
+    } catch (err) {
+      card.innerHTML = `
+        <div class="result-header"><span>${n}번째 실행</span><span style="color:#dc2626;">실패</span></div>
+        <div class="result-body" style="color:#dc2626;">${escapeHtml(err.message)}</div>`;
+    }
+    sum.textContent = `· 5문장 이내 ${ok5}/${done}`;
+  }
+}
+
+async function runExperiment() {
+  const trials = Number(document.getElementById("trials").value);
+  if (!document.getElementById("user-input").value.trim() || !document.getElementById("prompt-a").value.trim() || !document.getElementById("prompt-b").value.trim()) {
+    alert("입력과 지시 A, 지시 B를 모두 채워 주세요. 위의 버튼으로 실습 내용을 불러올 수 있습니다.");
+    return;
+  }
+  if (MODE !== "claude" && (!document.getElementById("vllm-url").value.trim() || !document.getElementById("vllm-model").value.trim())) {
+    alert("vLLM 서버 주소와 모델명을 모두 적어 주세요.");
+    return;
+  }
+  const targets = buildTargets();
+  renderResultAreas(targets);
+  const btn = document.getElementById("run-btn");
+  btn.disabled = true; btn.textContent = "실행 중...";
+  await Promise.all(targets.map((t, i) => runColumn(i, t, trials)));
+  btn.disabled = false; btn.textContent = "▶ A / B 동시에 실행";
+}
+
+setMode('claude');
+loadPreset(1);
+</script>
+</body>
+</html>
