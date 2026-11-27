@@ -1,0 +1,115 @@
+# Windows install test: runs install.ps1 the way students do (irm | iex) with a Korean user folder,
+# the default "Restricted" execution policy, on Windows PowerShell 5.1 and PowerShell 7.
+# Run scripts below are ASCII only (Windows PowerShell 5.1 reads BOM-less files as ANSI);
+# the Korean folder name is built from char codes.
+name: windows-install
+
+on:
+  push:
+    paths:
+      - install.ps1
+      - ab_tester.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/windows-install.yml
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    env:
+      CHILD_SHELL: ${{ matrix.shell }}
+      FIXED_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1
+      # Installer as it was before the Windows fix (3b2b395). Running it first leaves the same
+      # half-finished install a student would have, so the fixed installer must recover from it.
+      OLD_URL: https://raw.githubusercontent.com/${{ github.repository }}/3b2b395a19d5b6447fc5e933a5f1c1e41ccd7e06/install.ps1
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Old installer (expected to fail on Windows)
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k = [string][char]0xD574 + [char]0xCC3D
+          $prof = "C:\Users\$k"
+          New-Item -ItemType Directory -Force $prof | Out-Null
+          $env:USERPROFILE = $prof; $env:HOMEDRIVE = 'C:'; $env:HOMEPATH = "\Users\$k"
+          & $env:CHILD_SHELL -NoProfile -ExecutionPolicy Restricted -Command "irm '$env:OLD_URL' | iex"
+          Write-Host "OLD installer exit code: $LASTEXITCODE"
+          Write-Host ("OLD installer left ab_tester.mjs: " + (Test-Path "$prof\.prompt-ab-lab\ab_tester.mjs"))
+          Write-Host ("OLD installer left node_modules: " + (Test-Path "$prof\.prompt-ab-lab\node_modules"))
+          exit 0
+
+      - name: Fixed installer, run twice, then start ab-lab
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script:failed = $false
+          function Check($cond, $msg) { if ($cond) { Write-Host "PASS  $msg" } else { Write-Host "FAIL  $msg"; $script:failed = $true } }
+          $k = [string][char]0xD574 + [char]0xCC3D
+          $prof = "C:\Users\$k"
+          New-Item -ItemType Directory -Force $prof | Out-Null
+          $env:USERPROFILE = $prof; $env:HOMEDRIVE = 'C:'; $env:HOMEPATH = "\Users\$k"
+          $homeFile = Join-Path $env:RUNNER_TEMP 'home.txt'
+          function Install-Once {
+            & $env:CHILD_SHELL -NoProfile -ExecutionPolicy Restricted -Command "[IO.File]::WriteAllText('$homeFile', `$HOME, [Text.Encoding]::UTF8); irm '$env:FIXED_URL' | iex"
+          }
+
+          Write-Host '===== install #1 (on top of the old installer leftovers) ====='
+          Install-Once
+          $childHome = [IO.File]::ReadAllText($homeFile, [Text.Encoding]::UTF8)
+          Check ($childHome -eq $prof) "child `$HOME is the Korean folder"
+          $dest = "$prof\.prompt-ab-lab"
+          $shim = "$prof\.local\bin\ab-lab.cmd"
+          Check (Test-Path "$dest\ab_tester.mjs") 'tool downloaded'
+          Check (Test-Path "$dest\node_modules\@anthropic-ai\claude-agent-sdk\package.json") 'npm packages installed'
+          Check (Test-Path "$dest\node_modules\@anthropic-ai\claude-agent-sdk-win32-x64") 'Windows SDK binary installed'
+          Check (Test-Path $shim) 'ab-lab.cmd created'
+          if (Test-Path $shim) {
+            $bytes = [IO.File]::ReadAllBytes($shim)
+            Check (-not ($bytes | Where-Object { $_ -gt 127 })) 'ab-lab.cmd is ASCII only'
+            Get-Content $shim | ForEach-Object { Write-Host "      $_" }
+          }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          Check ($userPath -like "*$prof\.local\bin*") 'user PATH has the bin folder'
+
+          Write-Host '===== install #2 (update path, with a file missing as after an interrupted install) ====='
+          Remove-Item -Force "$dest\ab_tester.mjs" -ErrorAction SilentlyContinue
+          Install-Once
+          Check (Test-Path "$dest\ab_tester.mjs") 'second run restores the tool'
+
+          Write-Host '===== ab-lab in a new shell (PATH from the registry, as in a new window) ====='
+          $env:Path = "$userPath;$env:Path"
+          $out = Join-Path $env:RUNNER_TEMP 'srv.out'; $err = Join-Path $env:RUNNER_TEMP 'srv.err'
+          $srv = Start-Process -FilePath $env:CHILD_SHELL -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Restricted', '-Command', 'ab-lab --port=8123' -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          $up = $false
+          for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+            try { $up = (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8123/healthz' -TimeoutSec 2).StatusCode -eq 200 } catch { Start-Sleep 1 }
+          }
+          Check $up 'ab-lab server answers /healthz'
+          if ($up) {
+            $page = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8123/' -TimeoutSec 5
+            Check ($page.StatusCode -eq 200 -and $page.Content.Length -gt 1000) 'ab-lab serves the page'
+            $body = @{ provider = 'vllm'; vllm_url = 'http://127.0.0.1:9/v1'; system_prompt = 'x'; user_input = 'y' } | ConvertTo-Json
+            try { Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:8123/api/run' -Body $body -ContentType 'application/json' -TimeoutSec 30 | Out-Null; $vllmMsg = 'unexpected 200' }
+            catch { $vllmMsg = $_.ErrorDetails.Message }
+            Write-Host "vLLM mode with an unreachable server -> $vllmMsg"
+            Check ($vllmMsg -match 'detail') 'vLLM mode returns a JSON error instead of crashing'
+            $body = @{ provider = 'claude'; system_prompt = 'Reply with OK.'; user_input = 'hi' } | ConvertTo-Json
+            try { $claudeMsg = (Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:8123/api/run' -Body $body -ContentType 'application/json' -TimeoutSec 120).Content }
+            catch { $claudeMsg = $_.ErrorDetails.Message }
+            Write-Host "Claude mode without login (diagnostic only) -> $claudeMsg"
+          }
+          Write-Host '----- server stdout -----'; Get-Content $out -ErrorAction SilentlyContinue
+          Write-Host '----- server stderr -----'; Get-Content $err -ErrorAction SilentlyContinue
+          Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force }
+          if ($script:failed) { exit 1 } else { exit 0 }
