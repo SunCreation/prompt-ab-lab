@@ -1,0 +1,139 @@
+# macOS / Linux install test: runs install.sh the way students do (curl | bash) in a fresh HOME with a
+# clean environment, for two Node setups:
+#   system - Node on the system PATH, no nvm, no shell rc files (a fresh Mac with Node from nodejs.org)
+#   nvm    - Node installed with nvm, as the course's setup lesson does (rc file written by nvm)
+name: unix-install
+
+on:
+  push:
+    paths:
+      - install.sh
+      - ab_tester.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/unix-install.yml
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        node: [system, nvm]
+    env:
+      NODE_SETUP: ${{ matrix.node }}
+      FIXED_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh
+      # install.sh as it was before this fix (2f9637e).
+      OLD_URL: https://raw.githubusercontent.com/${{ github.repository }}/2f9637e058cdd3a22e3b28f7d9056eb7cf15af20/install.sh
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install and start ab-lab as a student would
+        run: |
+          # Actions runs bash with -eo pipefail; this script checks exit codes itself.
+          set +e +o pipefail
+          set -u
+          failed=0
+          check() { if eval "$1"; then echo "PASS  $2"; else echo "FAIL  $2"; failed=1; fi; }
+          NODE_BIN="$(dirname "$(command -v node)")"
+          if [ "$(uname -s)" = Darwin ]; then SHELLX=/bin/zsh; RC=.zshrc; else SHELLX=/bin/bash; RC=.bashrc; fi
+          SYS_PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+          if [ "$NODE_SETUP" = system ]; then BASEPATH="$NODE_BIN:$SYS_PATH"; else BASEPATH="$SYS_PATH"; fi
+          EXTRA_ENV=""
+          # Run a command in a clean environment, like a new student terminal before any rc file is read.
+          student() {
+            # shellcheck disable=SC2086
+            env -i HOME="$H" USER="$USER" LOGNAME="$USER" SHELL="$SHELLX" TERM=xterm-256color LANG=en_US.UTF-8 \
+              PATH="$BASEPATH" $EXTRA_ENV "$@"
+          }
+          # A new terminal window: login + interactive shell, so the rc files are read.
+          newterm() { if [ "$SHELLX" = /bin/zsh ]; then student /bin/zsh -l -i -c "$1"; else student /bin/bash -i -c "$1"; fi; }
+          LINE='export PATH="$HOME/.local/bin:$PATH"'
+          rc_count() { grep -cxF "$LINE" "$H/$RC" 2>/dev/null || true; }
+
+          new_home() {
+            H="$RUNNER_TEMP/student-$1"; rm -rf "$H"; mkdir -p "$H"
+            if [ "$NODE_SETUP" = nvm ]; then
+              touch "$H/$RC"
+              student bash -c "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | PROFILE='$H/$RC' bash" > /dev/null
+              student bash -c ". '$H/.nvm/nvm.sh' && nvm install --lts" > /dev/null 2>&1
+              echo "nvm node: $(ls "$H/.nvm/versions/node")"
+            fi
+          }
+
+          echo '===== old installer (2f9637e), for comparison ====='
+          new_home old
+          student bash -c "curl -fsSL '$OLD_URL' | bash" > "$RUNNER_TEMP/old.out" 2>&1; old_rc=$?
+          cat "$RUNNER_TEMP/old.out"
+          echo "OLD installer exit code: $old_rc, printed $(wc -l < "$RUNNER_TEMP/old.out") lines"
+
+          new_home new
+          dest="$H/.prompt-ab-lab"
+
+          echo '===== install #1 (fresh) ====='
+          student bash -c "curl -fsSL '$FIXED_URL' | bash"; rc=$?
+          check '[ "$rc" -eq 0 ]' 'installer exits 0'
+          check '[ -f "$dest/ab_tester.mjs" ]' 'tool downloaded'
+          check '[ -f "$dest/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]' 'npm packages installed'
+          check 'ls "$dest/node_modules/@anthropic-ai/" | grep -q "claude-agent-sdk-"' 'platform SDK binary installed'
+          check '[ -x "$H/.local/bin/ab-lab" ]' 'ab-lab launcher created'
+          check '[ "$(rc_count)" = 1 ]' "PATH line written once to ~/$RC"
+          found="$(newterm 'command -v ab-lab' < /dev/null 2>/dev/null | tail -1)"
+          echo "      new terminal: command -v ab-lab -> $found"
+          check '[ "$found" = "$H/.local/bin/ab-lab" ]' 'new terminal finds ab-lab'
+
+          echo '===== install #2 (clone-and-swap path: .git and a file missing, packages already there) ====='
+          rm -rf "$dest/.git" "$dest/ab_tester.mjs"
+          student bash -c "curl -fsSL '$FIXED_URL' | bash"; rc=$?
+          check '[ "$rc" -eq 0 ]' 'second run exits 0'
+          check '[ -f "$dest/ab_tester.mjs" ] && [ -d "$dest/.git" ]' 'second run restores the tool'
+          check '[ -f "$dest/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]' 'second run keeps the packages'
+          check '[ ! -e "$dest.new" ] && [ ! -e "$dest.old" ]' 'second run leaves no .new/.old folder'
+          check '[ "$(rc_count)" = 1 ]' 'second run does not add the PATH line again'
+
+          echo '===== install #3 (update while the network is down: the working install must survive) ====='
+          # Point git at a dead proxy through env config; only git is affected (curl and npm are not).
+          EXTRA_ENV="GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0=http://127.0.0.1:9"
+          student git -C "$dest" fetch --depth 1 --quiet origin HEAD > /dev/null 2>&1; g=$?
+          check '[ "$g" -ne 0 ]' 'simulated outage blocks git'
+          student bash -c "curl -fsSL '$FIXED_URL' | bash"; rc=$?
+          EXTRA_ENV=""
+          check '[ "$rc" -eq 0 ]' 'offline rerun exits 0'
+          check '[ -f "$dest/ab_tester.mjs" ]' 'offline rerun keeps the tool'
+          check '[ -f "$dest/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]' 'offline rerun keeps the packages'
+          check '[ ! -e "$dest.new" ]' 'offline rerun leaves no temp folder'
+
+          echo '===== ab-lab in a new terminal ====='
+          if [ "$(uname -s)" = Linux ]; then
+            # WSL often has no xdg-open; --open must not crash the server.
+            for x in $(which -a xdg-open 2>/dev/null); do sudo rm -f "$x"; done
+            check '! command -v xdg-open > /dev/null' 'xdg-open removed (simulating WSL)'
+          fi
+          newterm 'ab-lab --port=8123' < /dev/null > "$RUNNER_TEMP/srv.out" 2>&1 &
+          up=0
+          for i in $(seq 1 60); do
+            if curl -fsS -m 2 http://127.0.0.1:8123/healthz > /dev/null 2>&1; then up=1; break; fi
+            sleep 1
+          done
+          check '[ "$up" = 1 ]' 'ab-lab server answers /healthz'
+          if [ "$up" = 1 ]; then
+            check '[ "$(curl -fsS -m 5 http://127.0.0.1:8123/ | wc -c)" -gt 1000 ]' 'ab-lab serves the page'
+            post() { curl -s -m 120 -w '\nHTTP %{http_code}' -H 'Content-Type: application/json' -d "$1" http://127.0.0.1:8123/api/run; }
+            vllm="$(post '{"provider":"vllm","vllm_url":"http://127.0.0.1:9/v1","system_prompt":"x","user_input":"y"}')"
+            echo "vLLM mode with an unreachable server -> $vllm"
+            check 'echo "$vllm" | grep -q "HTTP 500" && echo "$vllm" | grep -q "\"detail\""' 'vLLM mode returns a JSON error'
+            claude="$(post '{"provider":"claude","system_prompt":"Reply with OK.","user_input":"hi"}')"
+            echo "Claude mode without login (diagnostic only) -> $claude"
+            sleep 2
+            check 'curl -fsS -m 5 http://127.0.0.1:8123/healthz > /dev/null' 'server still running after both requests'
+          fi
+          echo '----- server output -----'; cat "$RUNNER_TEMP/srv.out" || true
+          pkill -f ab_tester.mjs || true
+          exit "$failed"

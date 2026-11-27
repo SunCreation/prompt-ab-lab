@@ -68,11 +68,19 @@
         Write-Host "[확인] 최신 버전을 받지 못해 이미 설치된 버전을 그대로 씁니다. 인터넷 연결을 확인해 주세요." -ForegroundColor Yellow
         $keptOld = $true
       } else {
+        # 받아 둔 패키지는 새 폴더로 옮겨 다시 내려받지 않게 하고, 폴더 이름만 바꿔 갈아 끼운다.
+        # 기존 폴더를 먼저 지우지 않으므로, 패키지 설치가 실패해도 도구가 통째로 사라지지 않는다.
+        $old = "$Dest.old"
         if (Test-Path $Dest) {
-          try { Remove-Item -Recurse -Force $Dest }
-          catch { Fail "이전 설치 폴더를 지우지 못했습니다. 실행 중인 ab-lab 창을 모두 닫고 다시 실행해 주세요." $_.Exception.Message }
+          try {
+            $mods = Join-Path $Dest "node_modules"
+            if (Test-Path $mods) { Move-Item -LiteralPath $mods -Destination (Join-Path $tmp "node_modules") }
+            if (Test-Path $old) { Remove-Item -Recurse -Force $old }
+            Rename-Item -LiteralPath $Dest -NewName (Split-Path $old -Leaf)
+          } catch { Fail "이전 설치 폴더를 옮기지 못했습니다. 실행 중인 ab-lab 창을 모두 닫고 다시 실행해 주세요." $_.Exception.Message }
         }
         Rename-Item -LiteralPath $tmp -NewName (Split-Path $Dest -Leaf)
+        if (Test-Path $old) { Remove-Item -Recurse -Force $old -ErrorAction SilentlyContinue }
       }
     }
 
@@ -82,7 +90,7 @@
       Say "필요한 패키지(약 190MB)를 설치합니다. 1~5분 걸릴 수 있으니 창을 닫지 마세요."
       Push-Location $Dest
       try { $r = Run $npm @("install", "--no-audit", "--no-fund") } finally { Pop-Location }
-      if ($r.Code -ne 0) { Fail "패키지 설치에 실패했습니다. '$Dest' 에서 npm install 을 다시 실행해 보세요." $r.Output }
+      if ($r.Code -ne 0) { Fail "패키지 설치에 실패했습니다. 인터넷 연결을 확인한 뒤 설치 명령을 다시 실행해 주세요." $r.Output }
     }
 
     # ab-lab.cmd 에는 사용자 폴더 경로를 직접 적지 않는다. 이 파일이 있는 폴더(%~dp0, 곧 <홈>\.local\bin)를

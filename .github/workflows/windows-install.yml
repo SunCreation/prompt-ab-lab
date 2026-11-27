@@ -91,10 +91,14 @@ jobs:
           Check ((Raw-UserPath) -like '*%SystemRoot%\ab-lab-ci*') 'user PATH keeps %VAR% entries unexpanded'
           Check ((Get-Item 'HKCU:\Environment').GetValueKind('Path') -eq 'ExpandString') 'user PATH stays REG_EXPAND_SZ'
 
-          Write-Host '===== install #2 (update path, with a file missing as after an interrupted install) ====='
+          Write-Host '===== install #2 (clone-and-swap path: .git and a file missing, packages already there) ====='
           Remove-Item -Force "$dest\ab_tester.mjs" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$dest\.git" -ErrorAction SilentlyContinue
           Install-Once
           Check (Test-Path "$dest\ab_tester.mjs") 'second run restores the tool'
+          Check (Test-Path "$dest\.git") 'second run re-clones'
+          Check (Test-Path "$dest\node_modules\@anthropic-ai\claude-agent-sdk\package.json") 'second run keeps the packages'
+          Check (-not (Test-Path "$dest.new") -and -not (Test-Path "$dest.old")) 'second run leaves no .new/.old folder'
           Check ((Bin-Count) -eq 1) 'second run does not add the bin folder again'
 
           Write-Host '===== install #3 (update while the network is down: the working install must survive) ====='

@@ -92,7 +92,8 @@ function openBrowser(url) {
     : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
     : ["xdg-open", [url]];
   try {
-    spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
+    // 명령이 없으면(예: xdg-open 이 없는 WSL) spawn 은 던지지 않고 'error' 이벤트를 낸다. 받지 않으면 서버가 죽는다.
+    spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
   } catch {
     // 브라우저를 열지 못해도 서버는 계속 실행됩니다. 주소는 터미널에 출력됩니다.
   }
