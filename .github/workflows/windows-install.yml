@@ -98,18 +98,24 @@ jobs:
           if ($up) {
             $page = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8123/' -TimeoutSec 5
             Check ($page.StatusCode -eq 200 -and $page.Content.Length -gt 1000) 'ab-lab serves the page'
-            $body = @{ provider = 'vllm'; vllm_url = 'http://127.0.0.1:9/v1'; system_prompt = 'x'; user_input = 'y' } | ConvertTo-Json
-            try { Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:8123/api/run' -Body $body -ContentType 'application/json' -TimeoutSec 30 | Out-Null; $vllmMsg = 'unexpected 200' }
-            catch { $vllmMsg = $_.ErrorDetails.Message }
-            Write-Host "vLLM mode with an unreachable server -> $vllmMsg"
-            Check ($vllmMsg -match 'detail') 'vLLM mode returns a JSON error instead of crashing'
-            $body = @{ provider = 'claude'; system_prompt = 'Reply with OK.'; user_input = 'hi' } | ConvertTo-Json
-            try { $claudeMsg = (Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:8123/api/run' -Body $body -ContentType 'application/json' -TimeoutSec 120).Content }
-            catch { $claudeMsg = $_.ErrorDetails.Message }
-            Write-Host "Claude mode without login (diagnostic only) -> $claudeMsg"
+            # curl.exe prints the status and body of error responses as-is (Invoke-WebRequest in 5.1 does not).
+            [Console]::OutputEncoding = [Text.Encoding]::UTF8
+            function Post-Run($json) {
+              $f = Join-Path $env:RUNNER_TEMP 'req.json'
+              [IO.File]::WriteAllText($f, $json)
+              (& curl.exe -s -m 120 -w "`nHTTP %{http_code}" -H 'Content-Type: application/json' --data-binary "@$f" 'http://127.0.0.1:8123/api/run' 2>&1 | Out-String).Trim()
+            }
+            $vllm = Post-Run '{"provider":"vllm","vllm_url":"http://127.0.0.1:9/v1","system_prompt":"x","user_input":"y"}'
+            Write-Host "vLLM mode with an unreachable server -> $vllm"
+            Check ($vllm -match 'HTTP 500' -and $vllm -match '"detail"') 'vLLM mode returns a JSON error'
+            $claude = Post-Run '{"provider":"claude","system_prompt":"Reply with OK.","user_input":"hi"}'
+            Write-Host "Claude mode without login (diagnostic only) -> $claude"
+            $alive = $false
+            try { $alive = (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8123/healthz' -TimeoutSec 5).StatusCode -eq 200 } catch {}
+            Check $alive 'server still running after both requests'
           }
-          Write-Host '----- server stdout -----'; Get-Content $out -ErrorAction SilentlyContinue
-          Write-Host '----- server stderr -----'; Get-Content $err -ErrorAction SilentlyContinue
+          Write-Host '----- server stdout -----'; Get-Content $out -Encoding UTF8 -ErrorAction SilentlyContinue
+          Write-Host '----- server stderr -----'; Get-Content $err -Encoding UTF8 -ErrorAction SilentlyContinue
           Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force
           if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force }
           if ($script:failed) { exit 1 } else { exit 0 }
