@@ -49,7 +49,7 @@ jobs:
           Write-Host ("OLD installer left node_modules: " + (Test-Path "$prof\.prompt-ab-lab\node_modules"))
           exit 0
 
-      - name: Fixed installer, run twice, then start ab-lab
+      - name: Fixed installer, run three times (last one offline), then start ab-lab
         run: |
           $ErrorActionPreference = 'Continue'
           $script:failed = $false
@@ -62,6 +62,14 @@ jobs:
           function Install-Once {
             & $env:CHILD_SHELL -NoProfile -ExecutionPolicy Restricted -Command "[IO.File]::WriteAllText('$homeFile', `$HOME, [Text.Encoding]::UTF8); irm '$env:FIXED_URL' | iex"
           }
+
+          # User Path as stored (REG_EXPAND_SZ, %VAR% not expanded). Seed an entry that uses %SystemRoot%
+          # so a rewrite that expands it (or stores REG_SZ) is caught, as nvm-windows' %NVM_HOME% would be.
+          function Raw-UserPath { (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
+          $bin = "$prof\.local\bin"
+          function Bin-Count { @((Raw-UserPath) -split ';' | Where-Object { $_ -eq $bin }).Count }
+          $seed = Raw-UserPath
+          Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value ('%SystemRoot%\ab-lab-ci;' + $seed) -Type ExpandString
 
           Write-Host '===== install #1 (on top of the old installer leftovers) ====='
           Install-Once
@@ -78,13 +86,29 @@ jobs:
             Check (-not ($bytes | Where-Object { $_ -gt 127 })) 'ab-lab.cmd is ASCII only'
             Get-Content $shim | ForEach-Object { Write-Host "      $_" }
           }
-          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-          Check ($userPath -like "*$prof\.local\bin*") 'user PATH has the bin folder'
+          Check ((Bin-Count) -eq 1) 'user PATH has the bin folder'
+          Write-Host ("      user Path (raw): " + (Raw-UserPath))
+          Check ((Raw-UserPath) -like '*%SystemRoot%\ab-lab-ci*') 'user PATH keeps %VAR% entries unexpanded'
+          Check ((Get-Item 'HKCU:\Environment').GetValueKind('Path') -eq 'ExpandString') 'user PATH stays REG_EXPAND_SZ'
 
           Write-Host '===== install #2 (update path, with a file missing as after an interrupted install) ====='
           Remove-Item -Force "$dest\ab_tester.mjs" -ErrorAction SilentlyContinue
           Install-Once
           Check (Test-Path "$dest\ab_tester.mjs") 'second run restores the tool'
+          Check ((Bin-Count) -eq 1) 'second run does not add the bin folder again'
+
+          Write-Host '===== install #3 (update while the network is down: the working install must survive) ====='
+          # Point git at a dead proxy through env config; only git is affected (irm and npm are not).
+          $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.proxy'; $env:GIT_CONFIG_VALUE_0 = 'http://127.0.0.1:9'
+          & git -C $dest fetch --depth 1 --quiet origin HEAD 2>&1 | Out-Null
+          Check ($LASTEXITCODE -ne 0) 'simulated outage blocks git'
+          Install-Once
+          Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0
+          Check (Test-Path "$dest\ab_tester.mjs") 'offline rerun keeps the tool'
+          Check (Test-Path "$dest\node_modules\@anthropic-ai\claude-agent-sdk\package.json") 'offline rerun keeps the packages'
+          Check (-not (Test-Path "$dest.new")) 'offline rerun leaves no temp folder'
+          Check ((Bin-Count) -eq 1) 'offline rerun does not add the bin folder again'
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
           Write-Host '===== ab-lab in a new shell (PATH from the registry, as in a new window) ====='
           $env:Path = "$userPath;$env:Path"

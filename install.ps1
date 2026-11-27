@@ -54,17 +54,36 @@
       if ($r.Code -eq 0) { $r = Run $git @("-C", $Dest, "reset", "--hard", "--quiet", "FETCH_HEAD") }
       $ready = ($r.Code -eq 0) -and (Test-Path (Join-Path $Dest "ab_tester.mjs"))
     }
+    $keptOld = $false
     if (-not $ready) {
       Say "도구를 내려받습니다."
-      if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
-      $r = Run $git @("clone", "--depth", "1", "--quiet", "https://github.com/$Repo.git", $Dest)
-      if ($r.Code -ne 0) { Fail "내려받기에 실패했습니다. 인터넷 연결을 확인해 주세요." $r.Output }
+      # 옆 폴더에 먼저 받고, 받기에 성공했을 때만 기존 폴더와 바꾼다.
+      # 인터넷이 끊긴 채 다시 실행해도 잘 돌던 설치를 지우지 않기 위해서다.
+      $tmp = "$Dest.new"
+      if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+      $r = Run $git @("clone", "--depth", "1", "--quiet", "https://github.com/$Repo.git", $tmp)
+      if ($r.Code -ne 0) {
+        if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+        if (-not (Test-Path (Join-Path $Dest "ab_tester.mjs"))) { Fail "내려받기에 실패했습니다. 인터넷 연결을 확인해 주세요." $r.Output }
+        Write-Host "[확인] 최신 버전을 받지 못해 이미 설치된 버전을 그대로 씁니다. 인터넷 연결을 확인해 주세요." -ForegroundColor Yellow
+        $keptOld = $true
+      } else {
+        if (Test-Path $Dest) {
+          try { Remove-Item -Recurse -Force $Dest }
+          catch { Fail "이전 설치 폴더를 지우지 못했습니다. 실행 중인 ab-lab 창을 모두 닫고 다시 실행해 주세요." $_.Exception.Message }
+        }
+        Rename-Item -LiteralPath $tmp -NewName (Split-Path $Dest -Leaf)
+      }
     }
 
-    Say "필요한 패키지를 설치합니다. (잠시 걸립니다)"
-    Push-Location $Dest
-    try { $r = Run $npm @("install", "--no-audit", "--no-fund") } finally { Pop-Location }
-    if ($r.Code -ne 0) { Fail "패키지 설치에 실패했습니다. '$Dest' 에서 npm install 을 다시 실행해 보세요." $r.Output }
+    if ($keptOld -and (Test-Path (Join-Path $Dest "node_modules\@anthropic-ai\claude-agent-sdk\package.json"))) {
+      Say "패키지는 이미 설치된 것을 그대로 씁니다."
+    } else {
+      Say "필요한 패키지(약 190MB)를 설치합니다. 1~5분 걸릴 수 있으니 창을 닫지 마세요."
+      Push-Location $Dest
+      try { $r = Run $npm @("install", "--no-audit", "--no-fund") } finally { Pop-Location }
+      if ($r.Code -ne 0) { Fail "패키지 설치에 실패했습니다. '$Dest' 에서 npm install 을 다시 실행해 보세요." $r.Output }
+    }
 
     # ab-lab.cmd 에는 사용자 폴더 경로를 직접 적지 않는다. 이 파일이 있는 폴더(%~dp0, 곧 <홈>\.local\bin)를
     # 기준으로 <홈>\.prompt-ab-lab 을 찾으므로, 사용자 이름이 한글이어도 파일에는 ASCII 만 들어간다.
@@ -73,13 +92,26 @@
     Set-Content -Path (Join-Path $BinDir "ab-lab.cmd") -Value $wrapper -Encoding ASCII
     Say "한 줄 명령 등록: $BinDir\ab-lab.cmd"
 
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$BinDir*") {
-      [Environment]::SetEnvironmentVariable("Path", "$BinDir;$userPath", "User")
-      Say "PATH 에 $BinDir 을 추가했습니다."
+    # 사용자 PATH 는 레지스트리 값을 펼치지 않은 채(%NVM_HOME% 같은 항목 그대로) 읽고 REG_EXPAND_SZ 로 다시 쓴다.
+    # [Environment] 의 Get/Set 은 %VAR% 를 펼친 값을 REG_SZ 로 써 버려 nvm-windows 같은 항목이 굳는다.
+    # 관리되는 학교 PC(Constrained Language Mode)에서는 이 단계가 막힐 수 있어 실패해도 설치는 끝까지 간다.
+    try {
+      $rawPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+      if (($rawPath -split ';') -notcontains $BinDir) {
+        $newPath = if ($rawPath) { "$BinDir;$rawPath" } else { $BinDir }
+        Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value $newPath -Type ExpandString
+        # 새로 여는 창이 바뀐 PATH 를 읽도록 설정 변경 알림을 보낸다.
+        try {
+          [Environment]::SetEnvironmentVariable('AB_LAB_PATH_REFRESH', '1', 'User')
+          [Environment]::SetEnvironmentVariable('AB_LAB_PATH_REFRESH', $null, 'User')
+        } catch {}
+        Say "PATH 에 $BinDir 을 추가했습니다."
+      }
+    } catch {
+      Write-Host "[확인] PATH 에 등록하지 못했습니다. 새 창에서는  & `"$BinDir\ab-lab.cmd`"  로 실행하세요." -ForegroundColor Yellow
     }
     # 지금 이 창에서도 바로 ab-lab 을 쓸 수 있게 한다.
-    if ($env:Path -notlike "*$BinDir*") { $env:Path = "$BinDir;$env:Path" }
+    if (($env:Path -split ';') -notcontains $BinDir) { $env:Path = "$BinDir;$env:Path" }
 
     $claude = Find-App claude
     if ($claude) {
@@ -92,6 +124,7 @@
     Write-Host ""
     Say "설치가 끝났습니다."
     Write-Host "    ab-lab  을 입력하면 브라우저에 화면이 뜹니다."
+    Write-Host "    다른 창(VS Code 터미널 등)에서 안 되면 그 창을 닫았다가 다시 여세요."
   } catch {
     Write-Host ""
     Write-Host "[실패] " $_.Exception.Message -ForegroundColor Red
